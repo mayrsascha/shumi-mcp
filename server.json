@@ -1,0 +1,34 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "ai.shumi/mcp",
+  "description": "Crypto trade-intelligence: prices, trends, funding rates, sentiment, narratives, market regime, signals, and delta-neutral ideas.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/mayrsascha/shumi-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://shumi.ai",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@shumi-ai/mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SHUMI_TOKEN",
+          "description": "Shumi API key (shumi_sk_*). Create one at https://shumi.ai.",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "SHUMI_API_URL",
+          "description": "Override the API base URL (defaults to the production coinrotator-ai endpoint).",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

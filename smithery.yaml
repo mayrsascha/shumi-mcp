@@ -1,0 +1,22 @@
+# Smithery hosted deployment (container runtime). Smithery builds the Dockerfile,
+# sets PORT, routes MCP traffic to /mcp, and injects each user's session config —
+# which src/http-server.js reads (the `shumiToken` maps to the upstream key).
+runtime: container
+
+build:
+  dockerfile: Dockerfile
+  dockerBuildPath: .
+
+startCommand:
+  type: http
+  configSchema:
+    type: object
+    required:
+      - shumiToken
+    properties:
+      shumiToken:
+        type: string
+        title: Shumi API key
+        description: Your shumi_sk_* key from https://shumi.ai (3 free queries, then upgrade).
+  exampleConfig:
+    shumiToken: shumi_sk_example

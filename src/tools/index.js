@@ -1,0 +1,409 @@
+import { z } from 'zod';
+import { apiGet, askQuery, ApiError } from '../http-client.js';
+import { toMcpError } from '../errorMap.js';
+import { unwrap, applyFilters, result, safe } from './util.js';
+
+/**
+ * Tool registry for the Shumi MCP server. Each typed tool maps 1:1 to a
+ * coinrotator-ai `/api/cli/*` route (the same routes the shumi CLI calls), so
+ * gating/tiers/x402 apply server-side unchanged. Tools are outcome-named, use
+ * enum'd params where the CLI does, and are flagged read-only.
+ *
+ * `TYPED_TOOLS` is also consumed by the `shumi://capabilities` resource so the
+ * data surface is described in exactly one place.
+ */
+
+const INTERVAL = z.enum(['1d', '1w']).describe('Trend interval: 1d (daily) or 1w (weekly).');
+
+// Default cap on list-returning tools so a naive call can't dump the whole
+// universe into the model's context (token cost). Callers raise/lower via `top`.
+const DEFAULT_LIST_CAP = 50;
+
+// Permissive shared output schema. The server's `{ data, meta }` envelope is
+// always a JSON object, so this validates while we leave the inner data shape
+// open. Per-tool tightening is a fast-follow once we capture live payloads.
+const SHARED_OUTPUT_SCHEMA = {
+  data: z.unknown().optional(),
+  meta: z.unknown().optional(),
+  error: z.unknown().optional(),
+};
+
+export const TYPED_TOOLS = [
+  {
+    name: 'lookup_coin',
+    title: 'Look up a coin',
+    description:
+      'Look up a single coin and its core metrics (price, trend, metadata) by symbol, name, CoinGecko/internal id, or on-chain contract address.',
+    inputSchema: {
+      by: z.enum(['symbol', 'name', 'id', 'contract']).default('symbol').describe('How `identifier` is interpreted.'),
+      identifier: z.string().min(1).describe('The symbol (BTC), name (Bitcoin), id (bitcoin), or contract address.'),
+      chain: z
+        .string()
+        .optional()
+        .describe('Chain for contract lookups (ethereum, bsc, solana, base, …). Required when by="contract".'),
+    },
+    build: ({ by, identifier, chain }) => {
+      const id = encodeURIComponent(identifier);
+      switch (by) {
+        case 'name':
+          return { route: `coin/by-name/${id}` };
+        case 'id':
+          return { route: `coin/by-id/${id}` };
+        case 'contract':
+          if (!chain) throw new ApiError(400, { error: { code: 'BAD_REQUEST', message: 'chain is required when by="contract".' } });
+          return { route: `coin/by-contract/${id}`, query: { chain } };
+        case 'symbol':
+        default:
+          return { route: 'coin/lookup', query: { symbol: identifier } };
+      }
+    },
+  },
+  {
+    name: 'resolve_coin',
+    title: 'Resolve a coin (fuzzy)',
+    description:
+      'Fuzzily resolve a symbol, name, or contract to canonical coin candidates. Use this first when the user input is ambiguous, before calling other tools.',
+    inputSchema: {
+      query: z.string().min(1).describe('Symbol, name, or contract to resolve.'),
+      limit: z.number().int().positive().max(50).optional().describe('Max candidates to return.'),
+    },
+    build: ({ query, limit }) => ({ route: 'resolve', query: { q: query, limit } }),
+  },
+  {
+    name: 'get_coin_sentiment',
+    title: 'Coin sentiment',
+    description: 'On-chain/social sentiment aggregates for a single coin.',
+    inputSchema: { symbol: z.string().min(1).describe('Coin symbol, e.g. BTC.') },
+    build: ({ symbol }) => ({ route: `coin/sentiment/${encodeURIComponent(symbol)}` }),
+  },
+  {
+    name: 'get_coin_historical',
+    title: 'Coin historical metadata',
+    description: 'Historical metadata for a coin (holder cohorts, sentiment and funding history).',
+    inputSchema: { symbol: z.string().min(1).describe('Coin symbol, e.g. ETH.') },
+    build: ({ symbol }) => ({ route: `coin/historical/${encodeURIComponent(symbol)}` }),
+  },
+  {
+    name: 'get_market_health',
+    title: 'Market health',
+    description: 'Overall market health: the UP/HODL/DOWN trend distribution and extreme movers. Set context for the full bundle.',
+    inputSchema: { context: z.boolean().optional().describe('Include the full market-context bundle (breadth velocity, regime age, leadership).') },
+    build: ({ context }) => ({ route: 'market/health', query: context ? { context: '1' } : {} }),
+  },
+  {
+    name: 'get_global_market',
+    title: 'Global market aggregates',
+    description: 'Global market aggregates: BTC dominance, total market cap, total volume.',
+    inputSchema: {},
+    build: () => ({ route: 'market/global' }),
+  },
+  {
+    name: 'get_prices',
+    title: 'Bulk live prices',
+    description: 'Bulk live prices, optionally with 4h/24h/7d baseline overlays. Omit symbols for the full tracked set.',
+    inputSchema: {
+      symbols: z.string().optional().describe('Comma-separated symbols, e.g. "BTC,ETH,SOL". Omit for all tracked coins.'),
+      baselines: z.boolean().optional().describe('Include 4h/24h/7d baseline price overlay.'),
+    },
+    listFilters: true,
+    build: ({ symbols, baselines }) => ({ route: 'market/prices', query: { symbols, ...(baselines ? { baselines: '1' } : {}) } }),
+  },
+  {
+    name: 'scan_trends',
+    title: 'Scan trends',
+    description:
+      'Trend scanner. state=fresh (newly started), stale (longest running), aligned (multi-timeframe agreement), extreme (biggest moves), historical.',
+    inputSchema: {
+      state: z.enum(['fresh', 'stale', 'aligned', 'extreme', 'historical']).default('fresh').describe('Which trend slice to return.'),
+      interval: INTERVAL.optional(),
+      limit: z.number().int().positive().max(200).optional().describe('Max results.'),
+    },
+    listFilters: true,
+    build: ({ state, interval, limit }) => ({ route: 'trends', query: { action: state, interval, limit } }),
+  },
+  {
+    name: 'scan_coins',
+    title: 'Scan / filter coins',
+    description: 'Filter the tracked universe by trend direction, category, market-cap band, and exchange.',
+    inputSchema: {
+      trend: z.enum(['UP', 'HODL', 'DOWN']).optional().describe('Filter by trend direction.'),
+      category: z.string().optional().describe('Filter by category name, e.g. "Layer 2".'),
+      mcap_min: z.number().optional().describe('Minimum market cap in USD.'),
+      mcap_max: z.number().optional().describe('Maximum market cap in USD.'),
+      exchange: z.string().optional().describe('Filter by exchange listing.'),
+      interval: INTERVAL.optional(),
+      limit: z.number().int().positive().max(200).optional().describe('Max results.'),
+    },
+    listFilters: true,
+    build: ({ trend, category, mcap_min, mcap_max, exchange, interval, limit }) => ({
+      route: 'scan',
+      query: { trend, category, mcap_min, mcap_max, exchange, interval, limit },
+    }),
+  },
+  {
+    name: 'get_market_sentiment',
+    title: 'Market sentiment',
+    description:
+      'Aggregate market sentiment. view=market/latest/summary (overall), narratives, categories, slopes/entity-slopes (what is trending), health (pipeline status).',
+    inputSchema: {
+      view: z
+        .enum(['market', 'latest', 'summary', 'narratives', 'categories', 'health', 'slopes', 'entity-slopes'])
+        .default('market')
+        .describe('Which sentiment view to return.'),
+    },
+    listFilters: true,
+    build: ({ view }) => ({ route: 'sentiment', query: { action: view } }),
+  },
+  {
+    name: 'list_narratives',
+    title: 'List narratives',
+    description: 'List the currently active market narratives (e.g. "AI coins", "DeFi summer").',
+    inputSchema: {},
+    listFilters: true,
+    build: () => ({ route: 'narratives' }),
+  },
+  {
+    name: 'get_narrative',
+    title: 'Narrative sentiment',
+    description: 'Sentiment and momentum for a single named narrative.',
+    inputSchema: { name: z.string().min(1).describe('Narrative name, e.g. "AI coins".') },
+    build: ({ name }) => ({ route: 'sentiment', query: { action: 'narrative', name } }),
+  },
+  {
+    name: 'list_categories',
+    title: 'List categories',
+    description: 'List all tracked crypto categories (DeFi, Layer 2, memes, …).',
+    inputSchema: {},
+    listFilters: true,
+    build: () => ({ route: 'category/list' }),
+  },
+  {
+    name: 'get_category',
+    title: 'Category detail',
+    description: 'Detail for one category. view=info (trend breakdown), coins (member coins), sentiment.',
+    inputSchema: {
+      name: z.string().min(1).describe('Category name, e.g. "Layer 2".'),
+      view: z.enum(['info', 'coins', 'sentiment']).default('info').describe('Which category view to return.'),
+    },
+    listFilters: true,
+    build: ({ name, view }) => ({ route: `category/${view}/${encodeURIComponent(name)}` }),
+  },
+  {
+    name: 'get_funding_momentum',
+    title: 'Funding momentum',
+    description:
+      'Perpetual funding-rate momentum, market-wide or for one symbol. APR is in percent units (1.7 = 1.7%); tier is cool/neutral/warm/hot.',
+    inputSchema: { symbol: z.string().optional().describe('Restrict to one symbol, e.g. BTC. Omit for the market-wide view.') },
+    build: ({ symbol }) => ({ route: 'funding/momentum', query: { symbol } }),
+  },
+  {
+    name: 'get_funding_alerts',
+    title: 'Funding alerts',
+    description: 'Discrete funding-rate alert events (asset, trigger zone, funding at trigger, fired-at time).',
+    inputSchema: {},
+    listFilters: true,
+    build: () => ({ route: 'funding/alerts' }),
+  },
+  {
+    name: 'get_regime',
+    title: 'Market regime',
+    description:
+      'Market regime signals. view=active (current positions), signals (all), confidence (scores). Provide symbol to get that symbol\'s regime history instead.',
+    inputSchema: {
+      view: z.enum(['active', 'signals', 'confidence']).default('active').describe('Which regime view to return (ignored when symbol is set).'),
+      symbol: z.string().optional().describe('If set, returns regime history for this symbol.'),
+    },
+    build: ({ view, symbol }) =>
+      symbol ? { route: 'regime', query: { action: 'history', symbol } } : { route: 'regime', query: { action: view } },
+  },
+  {
+    name: 'get_signal',
+    title: 'Synthesized signal',
+    description: 'Synthesized verdict for a coin, combining trend, funding, sentiment and regime.',
+    inputSchema: { symbol: z.string().min(1).describe('Coin symbol, e.g. SOL.') },
+    build: ({ symbol }) => ({ route: `signal/${encodeURIComponent(symbol)}` }),
+  },
+  {
+    name: 'get_signal_quality',
+    title: 'Signal quality',
+    description: 'Signal validation envelope for an asset: Sharpe ratio, win rate, sample size, reliability tier.',
+    inputSchema: {
+      asset: z.string().min(1).describe('Asset symbol, e.g. BTC.'),
+      signal_type: z.string().optional().describe('Signal type (default: mean_reversion).'),
+    },
+    build: ({ asset, signal_type }) => ({ route: 'signal-quality', query: { asset, signal_type } }),
+  },
+  {
+    name: 'get_pair_suggestions',
+    title: 'Pair / delta-neutral suggestions',
+    description:
+      'Pair-trading and delta-neutral funding-arbitrage intelligence. mode=suggestions (pair ideas), delta-neutral (funding arb), history (backtest), signal (state for a specific pair — needs token_a & token_b).',
+    inputSchema: {
+      mode: z.enum(['suggestions', 'delta-neutral', 'history', 'signal']).default('suggestions').describe('Which pair view to return.'),
+      symbol: z.string().optional().describe('Filter by symbol (suggestions / delta-neutral).'),
+      exchange: z.string().optional().describe('Filter by exchange (delta-neutral).'),
+      dex_only: z.boolean().optional().describe('DEX exchanges only (delta-neutral).'),
+      token_a: z.string().optional().describe('First token (required for mode="signal"), e.g. ETH.'),
+      token_b: z.string().optional().describe('Second token (required for mode="signal"), e.g. SOL.'),
+      limit: z.number().int().positive().max(100).optional().describe('Max results.'),
+    },
+    listFilters: true,
+    build: ({ mode, symbol, exchange, dex_only, token_a, token_b, limit }) => {
+      if (mode === 'signal') {
+        if (!token_a || !token_b) {
+          throw new ApiError(400, { error: { code: 'BAD_REQUEST', message: 'token_a and token_b are required when mode="signal".' } });
+        }
+        return { route: 'pairs', query: { action: 'signal', tokenA: token_a, tokenB: token_b } };
+      }
+      if (mode === 'history') return { route: 'pairs', query: { action: 'history' } };
+      return {
+        route: 'pairs',
+        query: { action: mode, symbol, exchange, ...(dex_only ? { 'dex-only': '1' } : {}), limit },
+      };
+    },
+  },
+];
+
+/** Register one typed tool. */
+function registerTyped(server, def) {
+  const inputSchema = { ...def.inputSchema };
+  if (def.listFilters) {
+    inputSchema.top = z.number().int().positive().optional().describe('Keep only the first N items (default 50). Raise for more, lower to save tokens.');
+    inputSchema.fields = z.string().optional().describe('Token-saving: comma-separated top-level fields to keep.');
+  }
+  server.registerTool(
+    def.name,
+    {
+      title: def.title,
+      description: def.description,
+      inputSchema,
+      outputSchema: SHARED_OUTPUT_SCHEMA,
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async (args = {}) => {
+      try {
+        const { route, query } = def.build(args);
+        const env = await apiGet(route, query || {});
+        let data = unwrap(env);
+        if (def.listFilters) {
+          // Apply the caller's filters, but default-cap when they didn't set `top`.
+          const top = args.top ?? DEFAULT_LIST_CAP;
+          data = applyFilters(data, { ...args, top });
+        }
+        return result(data, {
+          summary: def.summarize ? safe(def.summarize, data) : undefined,
+          meta: env?.meta,
+        });
+      } catch (err) {
+        return toMcpError(err);
+      }
+    },
+  );
+}
+
+/** Register `get_coin_risk` (special: fans out one request per symbol). */
+function registerCoinRisk(server) {
+  server.registerTool(
+    'get_coin_risk',
+    {
+      title: 'Coin risk context',
+      description:
+        'Bundled risk context for one or more coins: price, funding APR, daily/weekly trend, sentiment stance, and BTC correlation. The best single tool for "should I be worried about X".',
+      inputSchema: {
+        symbols: z.array(z.string().min(1)).min(1).max(15).describe('One or more coin symbols, e.g. ["BTC","ETH","SOL"].'),
+      },
+      outputSchema: SHARED_OUTPUT_SCHEMA,
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ symbols }) => {
+      try {
+        const envs = await Promise.all(
+          symbols.map((s) => apiGet(`coin/risk/${encodeURIComponent(s)}`).then((env) => ({ s, env })).catch((err) => ({ s, err }))),
+        );
+        if (envs.every((r) => r.err)) return toMcpError(envs[0].err);
+        const rows = envs.map(({ s, env, err }) => {
+          if (err) return { symbol: s.toUpperCase(), error: err.message };
+          // server may nest as { data: {...} } inside the envelope's data
+          const d = unwrap(env)?.data ?? unwrap(env);
+          return d ?? { symbol: s.toUpperCase(), error: 'no data' };
+        });
+        const ok = rows.filter((r) => !r.error);
+        const summary = `Risk context for ${rows.length} coin(s)${ok.length < rows.length ? ` (${rows.length - ok.length} unavailable)` : ''}.`;
+        return result(rows.length === 1 ? rows[0] : rows, { summary });
+      } catch (err) {
+        return toMcpError(err);
+      }
+    },
+  );
+}
+
+/** Register the two free-form NLP tools (ask / web search). */
+function registerNlp(server) {
+  server.registerTool(
+    'ask_shumi',
+    {
+      title: 'Ask Shumi (free-form)',
+      description:
+        'Ask Shumi any crypto-market question in natural language. Shumi classifies the query, fetches the relevant data, and returns a synthesized answer. Use this when no specific typed tool fits, or for multi-part / comparative questions.',
+      inputSchema: {
+        query: z.string().min(1).describe('The natural-language question, e.g. "is funding extreme on SOL right now?".'),
+        archetype: z.string().optional().describe('Specialization path (default "base"; e.g. "perp-dex").'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ query, archetype = 'base' }) => {
+      try {
+        const res = await askQuery({ messages: [{ role: 'user', content: query }], archetype });
+        const text = res?.text;
+        if (text) return { content: [{ type: 'text', text }] };
+        return result(res?.steps ?? res);
+      } catch (err) {
+        return toMcpError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'search_web',
+    {
+      title: 'Search the web',
+      description: 'Search the web for crypto information, or get a direct answer. Backed by Shumi\'s web-search tool.',
+      inputSchema: {
+        query: z.string().min(1).describe('What to search for.'),
+        answer: z.boolean().optional().describe('Return a direct synthesized answer instead of raw search results.'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ query, answer }) => {
+      try {
+        const constructed = answer ? `Answer this question: ${query}` : `Search the web for: ${query}`;
+        const res = await askQuery({ messages: [{ role: 'user', content: constructed }], commandContext: 'search' });
+        const text = res?.text;
+        if (text) return { content: [{ type: 'text', text }] };
+        return result(res?.steps ?? res);
+      } catch (err) {
+        return toMcpError(err);
+      }
+    },
+  );
+}
+
+export function registerTools(server) {
+  registerCoinRisk(server);
+  for (const def of TYPED_TOOLS) registerTyped(server, def);
+  registerNlp(server);
+}
+
+/** Lightweight descriptor of the data surface, for the capabilities resource. */
+export function toolCatalog() {
+  return {
+    typed: [
+      { name: 'get_coin_risk', title: 'Coin risk context' },
+      ...TYPED_TOOLS.map((d) => ({ name: d.name, title: d.title })),
+    ],
+    nlp: [
+      { name: 'ask_shumi', title: 'Ask Shumi (free-form)' },
+      { name: 'search_web', title: 'Search the web' },
+    ],
+  };
+}

@@ -1,0 +1,9 @@
+node_modules
+.git
+.github
+test
+*.log
+.DS_Store
+.env
+.env.*
+CHANGELOG.md

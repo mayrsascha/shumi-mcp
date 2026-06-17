@@ -1,0 +1,26 @@
+# Shumi
+
+> AI crypto-intelligence for developer workflows — markets, funding rates, narratives, and delta-neutral research, delivered as an MCP server, a CLI, and a web chat.
+
+Shumi is a composable crypto-intelligence primitive. It fuses deterministic market structure (trends, funding, regime) with probabilistic analysis and an honest track record, so an agent can answer questions like "is funding extreme on SOL right now?" or "what's the regime and risk context for my ETH position?" — not just fetch a price.
+
+It is not an exchange, a wallet, a trading bot, or a tip service. It is data and analysis you build on.
+
+## MCP server
+
+- Package (stdio): `@shumi-ai/mcp` — run with `npx -y @shumi-ai/mcp`
+- Auth: a `shumi_sk_*` key in the `SHUMI_TOKEN` environment variable. Create one free at https://shumi.ai (3 free queries to try it).
+- Tools: coin risk context, synthesized per-coin verdicts, market health, market regime, funding momentum and alerts, sentiment, narratives, trend and coin scanners, pair / delta-neutral research, and a free-form `ask_shumi` tool.
+- Transports: stdio (local) and Streamable HTTP (hosted).
+
+## Pricing
+
+- Free: 3 queries to try it.
+- Plus: $20/mo, 50 queries/day.
+- Pro: $200/mo, unlimited.
+- Holding $SHUMI also grants access.
+
+## Links
+
+- Site: https://shumi.ai
+- CLI: https://www.npmjs.com/package/shumi

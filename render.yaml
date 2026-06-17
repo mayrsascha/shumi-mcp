@@ -1,0 +1,25 @@
+# Render Blueprint for the hosted Streamable HTTP transport.
+# Create a Blueprint from this repo in the Render dashboard, or deploy via the
+# Render API/MCP. Set the secret env vars (sync:false) in the dashboard.
+services:
+  - type: web
+    name: shumi-mcp
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # The public URL of this service, e.g. https://shumi-mcp.onrender.com
+      - key: SHUMI_MCP_PUBLIC_URL
+        sync: false
+      # Comma-separated browser origins allowed to call /mcp (lock down in prod).
+      - key: SHUMI_MCP_ALLOWED_ORIGINS
+        sync: false
+      # Override the data API base only for preview/self-host (defaults to prod).
+      - key: SHUMI_API_URL
+        sync: false
+      # Set ONLY when the Phase 2 OAuth authorization server exists.
+      - key: SHUMI_MCP_AUTH_SERVER
+        sync: false

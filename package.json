@@ -1,0 +1,55 @@
+{
+  "name": "@shumi-ai/mcp",
+  "version": "0.1.0",
+  "description": "Shumi crypto trade-intelligence MCP server — the market intelligence the shumi CLI provides, for any MCP client.",
+  "type": "module",
+  "author": "pxeodev",
+  "mcpName": "ai.shumi/mcp",
+  "bin": {
+    "shumi-mcp": "bin/shumi-mcp.js"
+  },
+  "main": "src/server.js",
+  "files": [
+    "bin",
+    "src",
+    "server.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node bin/shumi-mcp.js",
+    "start:http": "node src/http-server.js",
+    "inspect": "npx -y @modelcontextprotocol/inspector node bin/shumi-mcp.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "mcp",
+    "modelcontextprotocol",
+    "crypto",
+    "cryptocurrency",
+    "trading",
+    "market-data",
+    "funding-rates",
+    "sentiment",
+    "shumi",
+    "ai"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mayrsascha/shumi-mcp.git"
+  },
+  "homepage": "https://shumi.ai",
+  "bugs": {
+    "url": "https://github.com/mayrsascha/shumi-mcp/issues"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.0"
+  }
+}
