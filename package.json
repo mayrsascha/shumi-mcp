@@ -22,7 +22,9 @@
     "start": "node bin/shumi-mcp.js",
     "start:http": "node src/http-server.js",
     "inspect": "npx -y @modelcontextprotocol/inspector node bin/shumi-mcp.js",
-    "test": "node --test"
+    "test": "node --test",
+    "verify": "node verify-live.mjs",
+    "verify:remote": "node verify-live.mjs --remote"
   },
   "keywords": [
     "mcp",
