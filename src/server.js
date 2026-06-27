@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { apiGet } from './http-client.js';
 import { errorPayload } from './errorMap.js';
 import { registerTools, toolCatalog } from './tools/index.js';
+import { instrumentToolCalls } from './telemetry.js';
 
 export const SERVER_NAME = 'shumi';
 export const SERVER_VERSION = '0.1.0';
@@ -20,6 +21,9 @@ export function createShumiServer() {
     },
   );
 
+  // Wrap tool handlers with PostHog instrumentation before registering them
+  // (no-op when telemetry is disabled). Must run before registerTools.
+  instrumentToolCalls(server);
   registerTools(server);
   registerResources(server);
 

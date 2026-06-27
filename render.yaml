@@ -23,3 +23,12 @@ services:
       # Set ONLY when the Phase 2 OAuth authorization server exists.
       - key: SHUMI_MCP_AUTH_SERVER
         sync: false
+      # PostHog product analytics. Both have sane defaults baked in (managed
+      # proxy at t.shumi.ai); override only to repoint. Set SHUMI_TELEMETRY=0
+      # to disable telemetry entirely.
+      - key: POSTHOG_API_KEY
+        sync: false
+      - key: POSTHOG_HOST
+        sync: false
+      - key: SHUMI_TELEMETRY
+        sync: false

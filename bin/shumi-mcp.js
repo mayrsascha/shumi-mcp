@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createShumiServer } from '../src/server.js';
+import { initTelemetry, shutdownTelemetry } from '../src/telemetry.js';
 
 /**
  * stdio entry point — the default. Run locally via `npx -y @shumi-ai/mcp`.
@@ -10,10 +11,18 @@ import { createShumiServer } from '../src/server.js';
  * to stderr.
  */
 async function main() {
+  initTelemetry('stdio');
   const server = createShumiServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write('shumi-mcp: stdio server ready\n');
+
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.on(signal, async () => {
+      await shutdownTelemetry();
+      process.exit(0);
+    });
+  }
 }
 
 main().catch((err) => {
