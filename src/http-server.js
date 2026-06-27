@@ -4,6 +4,11 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createShumiServer } from './server.js';
 import { runWithRequest } from './request-context.js';
+import { initTelemetry, shutdownTelemetry } from './telemetry.js';
+
+// Initialize PostHog once for the lifetime of the HTTP server (multi-tenant:
+// each request is attributed to its own bearer token inside the tool handler).
+initTelemetry('http');
 
 /**
  * Remote transport — Streamable HTTP (MCP 2025-11-25), the current recommended
@@ -175,3 +180,12 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   process.stderr.write(`shumi-mcp: Streamable HTTP server on http://localhost:${PORT}${MCP_PATH}\n`);
 });
+
+// Flush queued analytics on shutdown (Render sends SIGTERM on deploy/scale).
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, async () => {
+    server.close();
+    await shutdownTelemetry();
+    process.exit(0);
+  });
+}

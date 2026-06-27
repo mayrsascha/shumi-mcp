@@ -22,7 +22,7 @@
     "start": "node bin/shumi-mcp.js",
     "start:http": "node src/http-server.js",
     "inspect": "npx -y @modelcontextprotocol/inspector node bin/shumi-mcp.js",
-    "test": "node --test",
+    "test": "SHUMI_TELEMETRY=0 node --test",
     "verify": "node verify-live.mjs",
     "verify:remote": "node verify-live.mjs --remote"
   },
@@ -52,6 +52,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "posthog-node": "^5.38.6",
     "zod": "^3.25.0"
   }
 }
